@@ -1,0 +1,95 @@
+spring:
+  application:
+    name: expense-platform
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${DB_URL:jdbc:mysql://localhost:3306/expense_platform?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${DB_USERNAME:expense_app}
+    password: ${DB_PASSWORD:expense_app_dev}
+  flyway:
+    enabled: ${FLYWAY_ENABLED:true}
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+  servlet:
+    multipart:
+      # Spring 在进入 Controller 前执行的请求级大小限制。
+      max-file-size: ${ATTACHMENT_MAX_FILE_SIZE:10MB}
+      max-request-size: ${ATTACHMENT_MAX_REQUEST_SIZE:12MB}
+
+server:
+  port: ${SERVER_PORT:8080}
+  error:
+    include-message: always
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+    db-config:
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+security:
+  jwt:
+    # 使用 Base64 编码且不少于 32 字节的原始密钥，真实密钥只通过环境变量提供。
+    # 本地开发兜底密钥（Base64 解码后 32 字节）；生产环境必须通过 JWT_SECRET 覆盖。
+    secret: ${JWT_SECRET:qTU9CpYSb+dWADqFLNsrTcU0UBQePicUC4mdL09jYGA=}
+    expiration-seconds: ${JWT_EXPIRATION_SECONDS:7200}
+
+app:
+  notification:
+    rabbitmq:
+      # 默认关闭，未安装 RabbitMQ 时继续使用同步通知；学习异步消息时改为 true。
+      enabled: ${NOTIFICATION_RABBITMQ_ENABLED:false}
+      exchange: ${NOTIFICATION_RABBITMQ_EXCHANGE:expense.notification.exchange}
+      queue: ${NOTIFICATION_RABBITMQ_QUEUE:expense.notification.queue}
+      routing-key: ${NOTIFICATION_RABBITMQ_ROUTING_KEY:expense.notification.create}
+  attachment:
+    # 可选 local 或 minio；默认使用本地目录。
+    storage-type: ${ATTACHMENT_STORAGE_TYPE:local}
+    # 本地开发默认保存到 backend/data/attachments，可通过环境变量覆盖。
+    root-directory: ${ATTACHMENT_STORAGE_ROOT:./data/attachments}
+    # 业务层再次检查单文件大小，单位为字节，默认 10 MB。
+    max-file-size: ${ATTACHMENT_MAX_FILE_SIZE_BYTES:10485760}
+    allowed-extensions:
+      - jpg
+      - jpeg
+      - png
+      - pdf
+    minio:
+      endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+      access-key: ${MINIO_ACCESS_KEY:expense_minio}
+      secret-key: ${MINIO_SECRET_KEY:expense_minio_dev}
+      bucket: ${MINIO_BUCKET:expense-attachments}
+  invoice-recognition:
+    # mock 可直接本地运行；核心调用完成后将环境变量切换为 ai。
+    provider: ${INVOICE_RECOGNITION_PROVIDER:mock}
+    base-url: ${INVOICE_AI_BASE_URL:https://api.example.com}
+    api-key: ${INVOICE_AI_API_KEY:}
+    model: ${INVOICE_AI_MODEL:gpt-5.6-luna}
+    connect-timeout: ${INVOICE_AI_CONNECT_TIMEOUT:5s}
+    read-timeout: ${INVOICE_AI_READ_TIMEOUT:30s}
+    max-file-size: ${INVOICE_AI_MAX_FILE_SIZE:10485760}
+
+logging:
+  level:
+    com.shixi.expense: debug

@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.shixi.expense.report.mapper.ExpenseReportMapper">
+
+    <!-- 一次查询完成数量、状态分布和金额汇总，并根据角色限制数据范围。 -->
+    <select id="selectStatistics"
+            resultType="com.shixi.expense.report.vo.ExpenseReportStatisticsVO">
+        SELECT
+            COUNT(*) AS totalCount,
+            COALESCE(SUM(CASE WHEN er.status = 'DRAFT' THEN 1 ELSE 0 END), 0) AS draftCount,
+            COALESCE(SUM(CASE WHEN er.status = 'APPROVING' THEN 1 ELSE 0 END), 0) AS approvingCount,
+            COALESCE(SUM(CASE WHEN er.status = 'FINANCE_REVIEW' THEN 1 ELSE 0 END), 0) AS financeReviewCount,
+            COALESCE(SUM(CASE WHEN er.status = 'REJECTED' THEN 1 ELSE 0 END), 0) AS rejectedCount,
+            COALESCE(SUM(CASE WHEN er.status = 'PENDING_PAYMENT' THEN 1 ELSE 0 END), 0) AS pendingPaymentCount,
+            COALESCE(SUM(CASE WHEN er.status = 'COMPLETED' THEN 1 ELSE 0 END), 0) AS completedCount,
+            COALESCE(SUM(CASE WHEN er.status = 'WITHDRAWN' THEN 1 ELSE 0 END), 0) AS withdrawnCount,
+            COALESCE(SUM(er.total_amount), 0) AS totalAmount
+        FROM expense_report er
+        WHERE er.deleted = 0
+
+        <!-- 时间参数可选，不传时不限制对应边界。 -->
+        <if test="startTime != null">
+            AND er.created_at &gt;= #{startTime}
+        </if>
+        <if test="endTime != null">
+            AND er.created_at &lt;= #{endTime}
+        </if>
+
+        <choose>
+            <!-- 管理员查看全部数据，不追加权限条件。 -->
+            <when test="roleCode == 'ADMIN'">
+            </when>
+
+            <!-- 经理和财务只查看自己参与审批的报销单。 -->
+            <when test="roleCode == 'MANAGER' or roleCode == 'FINANCE'">
+                AND EXISTS (
+                    SELECT 1
+                    FROM approval_task task
+                    WHERE task.report_id = er.id
+                      AND task.approver_id = #{userId}
+                )
+            </when>
+
+            <!-- 普通员工只查看本人提交的报销单。 -->
+            <otherwise>
+                AND er.applicant_id = #{userId}
+            </otherwise>
+        </choose>
+    </select>
+
+    <!-- 按筛选条件和角色数据权限查询可导出的报销单，并按创建时间倒序返回。 -->
+    <select id="selectForExport"
+            resultType="com.shixi.expense.report.entity.ExpenseReport">
+        SELECT er.id, er.report_no, er.applicant_id, er.department_id,
+               er.title, er.total_amount, er.currency, er.status,
+               er.approval_round, er.submitted_at, er.completed_at,
+               er.version, er.created_at, er.updated_at
+        FROM expense_report er
+        WHERE er.deleted = 0
+        <if test="keyword != null and keyword.trim() != ''">
+            AND (er.report_no LIKE CONCAT('%', #{keyword}, '%')
+                 OR er.title LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        <if test="status != null and status.trim() != ''">
+            AND er.status = #{status}
+        </if>
+        <if test="startTime != null">
+            AND er.created_at &gt;= #{startTime}
+        </if>
+        <if test="endTime != null">
+            AND er.created_at &lt;= #{endTime}
+        </if>
+        <choose>
+            <when test="roleCode == 'ADMIN'">
+            </when>
+            <when test="roleCode == 'MANAGER' or roleCode == 'FINANCE'">
+                AND EXISTS (
+                    SELECT 1 FROM approval_task task
+                    WHERE task.report_id = er.id
+                      AND task.approver_id = #{userId}
+                )
+            </when>
+            <otherwise>
+                AND er.applicant_id = #{userId}
+            </otherwise>
+        </choose>
+        ORDER BY er.created_at DESC
+    </select>
+
+</mapper>

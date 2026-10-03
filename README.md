@@ -146,7 +146,7 @@ npm run test:e2e
 
 后端测试连接真实 MySQL，创建 / 清理测试自己的数据；使用独立开发数据库，切勿连接生产库。覆盖权限、状态流转、事务回滚、20 路并发接管、Redis 不可用、通知失败重试和附件清理。前端 `npm test` 是源码静态检查；Playwright 验证浏览器全流程及员工越权访问被拒绝。
 
-本次本地验证：**136 项后端测试通过**，前端检查与生产构建通过；浏览器验证记录见 [验证说明](docs/VALIDATION.md)。GitHub CI 使用独立 MySQL，运行同样的测试、浏览器流程并构建容器镜像；未运行过 CI 前，徽章不代表已通过。
+本次本地验证：**136 项后端测试、2 项浏览器测试通过**，前端检查与生产构建通过，一键启动脚本实际验收通过。2026-10-04 [首轮 GitHub CI](https://github.com/gaozhidao6/expense-platform/actions/runs/37135557208) 全部通过，包含独立 MySQL 测试、Chromium 流程、容器构建与启动、Nginx 代理登录。详见 [验证说明](docs/VALIDATION.md)。
 
 录制演示：后端启动后，在 `frontend` 中设置 `$env:RECORD_DEMO='true'`，执行 `npm run demo:record`。截图输出 `docs/assets/`，视频在 `test-results/`；将成功流程的 WebM 复制为 `docs/assets/demo.webm`。本机无法下载 Chromium 时可先执行 `npx playwright install ffmpeg`，设置 `$env:PLAYWRIGHT_CHANNEL='chrome'` 使用已安装的 Chrome。
 

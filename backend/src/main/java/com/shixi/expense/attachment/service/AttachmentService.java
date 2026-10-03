@@ -1,6 +1,11 @@
 package com.shixi.expense.attachment.service;
 
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import com.shixi.expense.common.jobs.DurableJobStore;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -46,6 +51,9 @@ import com.shixi.expense.report.mapper.ExpenseReportMapper;
 @Service
 public class AttachmentService {
 
+    private static final Logger log = LoggerFactory.getLogger(AttachmentService.class);
+    private final DurableJobStore cleanupJobs;
+
     /**
      * 文件扩展名与浏览器声明的 Content-Type 对应关系。
      *
@@ -77,12 +85,14 @@ public class AttachmentService {
             ExpenseReportMapper expenseReportMapper,
             CurrentUserService currentUserService,
             AttachmentStorage attachmentStorage,
-            AttachmentStorageProperties attachmentProperties) {
+            AttachmentStorageProperties attachmentProperties,
+            DurableJobStore cleanupJobs) {
         this.attachmentMapper = attachmentMapper;
         this.expenseReportMapper = expenseReportMapper;
         this.currentUserService = currentUserService;
         this.attachmentStorage = attachmentStorage;
         this.attachmentProperties = attachmentProperties;
+        this.cleanupJobs = cleanupJobs;
     }
 
     public String calculateSha256(MultipartFile file){
@@ -188,6 +198,23 @@ public class AttachmentService {
         String objectKey = "reports/"+ reportId+ "/"+ dateDirectory+ "/"
                             +UUID.randomUUID().toString().replace("-","")
                             +"." + extension;
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            throw new IllegalStateException("附件上传必须通过事务入口执行");
+        }
+        long recoveryId = cleanupJobs.stageUpload(objectKey);
+        cleanupJobs.protectUpload(recoveryId);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_ROLLED_BACK) return;
+                try {
+                    attachmentStorage.delete(objectKey);
+                    cleanupJobs.completeRecovery(recoveryId);
+                } catch (IOException | RuntimeException exception) {
+                    log.warn("附件回滚清理未完成，保留数据库重试任务，jobId={}", recoveryId);
+                }
+            }
+        });
         // 调用存储接口保存文件，并取得用于持久化的相对路径。
         String storagePath;
         try(InputStream inputStream = file.getInputStream()){
@@ -208,31 +235,13 @@ public class AttachmentService {
         attachment.setSha256(sha256);
         attachment.setCreatedAt(LocalDateTime.now());
 
-        // 数据库写入失败时删除刚保存的文件，补偿文件系统无法随事务回滚的问题。
-        try {
-            int rows = attachmentMapper.insert(attachment);
-
-            if (rows != 1) {
-                throw new IllegalStateException("附件元数据保存失败");
-            }
-        } catch (RuntimeException databaseException) {
-            try {
-                // 数据库保存失败，删除之前已经写入磁盘的文件。
-                attachmentStorage.delete(storagePath);
-            } catch (IOException | RuntimeException cleanupException) {
-                /*
-                * 删除失败不能覆盖原始数据库异常。
-                * addSuppressed() 会把清理异常附加到原异常中，
-                * 以后查看日志时仍然可以看到两个异常。
-                */
-                databaseException.addSuppressed(cleanupException);
-            }
-
-            // 重新抛出数据库异常，让 @Transactional 回滚数据库事务。
-            throw databaseException;
+        if (attachmentMapper.insert(attachment) != 1) {
+            throw new IllegalStateException("附件元数据保存失败");
         }
+        // Rollback compensation is registered before file writing and also covers commit failures.
 
         // 将数据库实体转换成前端响应对象，不暴露 storagePath 和 sha256 等内部字段。
+        cleanupJobs.finishUpload(recoveryId);
         return toVO(attachment);
     }
 
@@ -349,25 +358,9 @@ public class AttachmentService {
             "附件元数据删除失败"
                 );
         }
-        try {
-            attachmentStorage.delete(
-                    attachment.getStoragePath()
-            );
-        } catch (IOException exception) {
-            /*
-            * 抛出运行时异常，让 @Transactional
-            * 回滚前面的数据库删除操作。
-            */
-            throw new IllegalStateException(
-                    "附件文件删除失败",
-                    exception
-            );
-        }
-        /*
-         * 当前简单方案在同一方法内先删除数据库记录，再删除磁盘文件。
-         * 磁盘删除失败时抛出运行时异常，使数据库事务回滚；但如果事务提交阶段
-         * 极少数情况下失败，文件系统无法自动恢复，生产级方案需要异步补偿任务。
-         */
+        // Deletion intent commits atomically with metadata removal; worker retries object deletion.
+        cleanupJobs.enqueueCleanup(attachment.getStoragePath(), LocalDateTime.now());
+
     }
 
     /**

@@ -1,4 +1,24 @@
 services:
+  backend:
+    build: ./backend
+    environment:
+      TZ: Asia/Shanghai
+      DB_URL: jdbc:mysql://mysql:3306/expense_platform?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      DB_USERNAME: expense_app
+      DB_PASSWORD: ${MYSQL_APP_PASSWORD:-expense_app_dev}
+      JWT_SECRET: ${JWT_SECRET:?Generate JWT_SECRET first; see README}
+      REDIS_HOST: redis
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports: ['8080:8080']
+    volumes: [attachments:/app/data/attachments]
+  frontend:
+    build: ./frontend
+    depends_on: [backend]
+    ports: ['5173:8080']
   mysql:
     image: mysql:8.0
     container_name: expense-mysql
@@ -9,7 +29,7 @@ services:
       MYSQL_USER: expense_app
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:-expense_app_dev}
     ports:
-      - "3306:3306"
+      - "${MYSQL_PORT:-3307}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -28,11 +48,12 @@ services:
     command: redis-server --appendonly yes
 
   rabbitmq:
+    profiles: [extras]
     image: rabbitmq:3-management
     container_name: expense-rabbitmq
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: expense_mq
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-expense_mq_dev}
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -40,6 +61,7 @@ services:
       - rabbitmq_data:/var/lib/rabbitmq
 
   minio:
+    profiles: [extras]
     image: minio/minio:latest
     container_name: expense-minio
     environment:
@@ -53,6 +75,7 @@ services:
       - minio_data:/data
 
 volumes:
+  attachments:
   mysql_data:
   redis_data:
   rabbitmq_data:

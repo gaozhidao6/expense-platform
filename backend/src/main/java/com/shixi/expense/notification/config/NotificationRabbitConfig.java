@@ -2,6 +2,7 @@ package com.shixi.expense.notification.config;
 
 import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.core.BindingBuilder;
+import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
@@ -31,7 +32,25 @@ public class NotificationRabbitConfig {
     @Bean
     public Queue notificationQueue(NotificationRabbitProperties properties) {
         // 持久化队列在 RabbitMQ 重启后仍然存在。
-        return new Queue(properties.queue(), true);
+        return QueueBuilder.durable(properties.queue())
+                .deadLetterExchange(properties.exchange() + ".dead")
+                .deadLetterRoutingKey(properties.routingKey() + ".dead").build();
+    }
+
+    @Bean
+    public DirectExchange notificationDeadExchange(NotificationRabbitProperties properties) {
+        return new DirectExchange(properties.exchange() + ".dead", true, false);
+    }
+
+    @Bean
+    public Queue notificationDeadQueue(NotificationRabbitProperties properties) {
+        return QueueBuilder.durable(properties.queue() + ".dead").build();
+    }
+
+    @Bean
+    public Binding notificationDeadBinding(NotificationRabbitProperties properties) {
+        return BindingBuilder.bind(notificationDeadQueue(properties))
+                .to(notificationDeadExchange(properties)).with(properties.routingKey() + ".dead");
     }
 
     /** 绑定交换机和队列：routing key 匹配时，消息才会进入该队列。 */

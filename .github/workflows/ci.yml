@@ -1,0 +1,93 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci_root_only
+          MYSQL_DATABASE: expense_platform
+          MYSQL_USER: expense_app
+          MYSQL_PASSWORD: expense_app_dev
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -pci_root_only"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+    env:
+      DB_URL: jdbc:mysql://127.0.0.1:3306/expense_platform?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      DB_USERNAME: expense_app
+      DB_PASSWORD: expense_app_dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Backend tests and package
+        run: mvn -B -f backend/pom.xml verify
+      - name: Frontend checks and production build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+          npx playwright install --with-deps chromium
+      - name: Start backend and wait for readiness
+        run: |
+          export JWT_SECRET="$(openssl rand -base64 32)"
+          cd backend
+          java -jar target/expense-platform-0.0.1-SNAPSHOT.jar > /tmp/expense-backend.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/api/health >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          tail -n 80 /tmp/expense-backend.log
+          exit 1
+      - name: Browser workflow and access control
+        working-directory: frontend
+        run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-failure-screenshots-and-video
+          path: frontend/test-results/
+          retention-days: 7
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start the documented container stack
+        run: |
+          export JWT_SECRET="$(openssl rand -base64 32)"
+          docker compose config --quiet
+          docker compose up --build -d
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/api/health >/dev/null; then
+              curl -fsS http://127.0.0.1:5173/ >/dev/null
+              curl -fsS -H 'Content-Type: application/json' -d '{"username":"employee","password":"Employee123!"}' http://127.0.0.1:5173/api/auth/login | python3 -c 'import json,sys; assert json.load(sys.stdin).get("token")'
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose logs --tail=80 backend
+          exit 1

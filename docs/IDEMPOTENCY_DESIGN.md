@@ -1,49 +1,26 @@
 # 报销提交幂等设计
 
-## 业务目标
+唯一键为 `(idempotency_key, user_id)`，记录同时绑定业务类型和报销单 ID。同一 key 改用于另一张报销单返回 409。成功记录重放第一次响应，不执行第二次业务。
 
-同一个用户对同一个报销提交请求重复点击、重复发送或因网络超时重试时，系统最终只创建一套审批任务，并且重复请求能够得到第一次处理结果。
+## 事务边界
 
-幂等键来自请求头 `Idempotency-Key`。用户身份来自登录态。两者共同确定一次请求，不能只使用客户端传来的 key。
+1. Redis `SET NX` + 600 秒 TTL 快速拦截；不可用时退回数据库。
+2. `REQUIRES_NEW + READ_COMMITTED` 协调事务创建 PROCESSING 并提交，不随业务失败回滚。
+3. FAILED 或过期 PROCESSING 通过状态、version 和有效期条件的 CAS 更新接管，更新 owner_token。
+4. 独立业务事务对幂等行 `SELECT FOR UPDATE`，校验 token、绑定关系和有效期；持有行锁直到业务数据与 SUCCEEDED JSON 快照一起提交。
+5. 业务事务回滚完毕后，另一协调事务仅在 token 仍匹配时保存 FAILED，并清空响应快照。FAILED 没有可重放的成功响应，不能把普通文本写进 JSON 字段。
+6. Lua 校验 Redis value 等于当前 token 才释放；旧请求无法删除后来者的 Redis 锁或覆盖其状态。
 
-## 请求流程
+正在执行的业务持有 MySQL 行锁，租约到期也不会让另一个业务事务并行执行。接管 CAS 等待锁释放后仍要满足原状态与 version；已成功的请求不能再次取得处理权。
 
-```text
-Controller 读取 Idempotency-Key
-    -> 从 SecurityContext 取得 userId
-    -> IdempotencyService.acquire()
-       -> ACQUIRED：进入原有报销提交事务
-       -> PROCESSING：返回 409，提示请求仍在处理
-       -> SUCCEEDED：反序列化响应快照并直接返回
-       -> RETRYABLE_FAILED：允许再次进入业务
-    -> 报销提交事务成功
-       -> markSucceeded(responseSnapshot)
-    -> 报销提交事务失败
-       -> markFailed(ownerToken, safeErrorSummary)
-```
+| 状态 | 重复请求 |
+| --- | --- |
+| PROCESSING 且未过期 | 409 |
+| SUCCEEDED | 重放 JSON 快照 |
+| FAILED / 过期 PROCESSING | CAS 竞争；只有获胜者取得新 token |
 
-## Redis 与 MySQL 的职责
+## 已验证与限制
 
-- Redis：使用 `SET NX EX` 快速抢占处理权，降低重复请求进入业务事务的概率。
-- MySQL：使用已有的 `idempotency_record` 表和唯一键 `(idempotency_key, user_id)` 做最终兜底。
-- 报销单、审批任务和审批记录仍然以 MySQL 事务为准，Redis 不能替代业务数据。
+真实 MySQL 回归覆盖失败状态跨事务保存、同 key 重试、Redis 不可用仍不重复创建任务、20 路过期租约竞争只有一个获胜者、旧 token 不能完成或失败覆盖、不同业务绑定被拒绝。
 
-## 状态约定
-
-| 状态 | 含义 | 重复请求行为 |
-| --- | --- | --- |
-| `PROCESSING` | 已经有请求取得处理权 | 返回 409 |
-| `SUCCEEDED` | 业务已成功并保存响应摘要 | 返回第一次结果 |
-| `FAILED` | 业务失败且可以重试 | 重新抢占或创建记录 |
-
-## 需要补充的测试
-
-- 同一用户、同一 key 连续提交，只创建一套审批任务。
-- 同一用户使用不同 key，可以按业务规则分别处理。
-- 不同用户使用相同 key，互不影响。
-- 业务事务失败后，下一次请求可以重试。
-- 20 个并发请求中只有一个获得处理权。
-- Redis 不可用时，数据库唯一键仍然能阻止重复提交。
-
-当前实现已经接入 Redis 原子抢占、MySQL 唯一索引兜底、响应快照复用和
-ownerToken 校验释放。失败状态与业务事务的独立持久化仍需继续完善。
+本实现面向提交报销链路，未把所有 API 通用化。成功快照会长期保留，尚未实现清理策略。Redis 锁是优化，MySQL 是正确性的依据；当前回归注入 Redis 故障，没有测试真实 Redis 网络分区。

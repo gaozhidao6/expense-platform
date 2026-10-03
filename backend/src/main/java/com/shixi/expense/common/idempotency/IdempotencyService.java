@@ -27,7 +27,9 @@ public interface IdempotencyService {
      * @param request          原始幂等请求上下文
      * @param responseSnapshot 可重放给重复请求的最小响应快照
      */
-    void markSucceeded(IdempotencyRequest request, String responseSnapshot);
+    void lockOwnership(IdempotencyRequest request, String ownerToken);
+
+    void markSucceeded(IdempotencyRequest request, String ownerToken, String responseSnapshot);
 
     /**
      * 业务异常时释放或标记失败。

@@ -4,6 +4,8 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
+    "test:e2e": "playwright test",
+    "demo:record": "playwright test --grep 'expense workflow'",
     "test": "node scripts/frontend-smoke-check.mjs",
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
@@ -17,6 +19,7 @@
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "^22.10.5",
     "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "~5.6.3",

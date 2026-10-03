@@ -1,7 +1,6 @@
 package com.shixi.expense.report.service;
 
 import java.math.BigDecimal;
-import java.sql.Wrapper;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -16,19 +15,14 @@ import org.springframework.transaction.annotation.Transactional;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shixi.expense.approval.entity.ApprovalRecord;
 import com.shixi.expense.approval.entity.ApprovalTask;
 import com.shixi.expense.approval.mapper.ApprovalRecordMapper;
 import com.shixi.expense.approval.mapper.ApprovalTaskMapper;
 import com.shixi.expense.common.exception.BusinessException;
 import com.shixi.expense.common.exception.ErrorCode;
-import com.shixi.expense.common.idempotency.IdempotencyAcquireResult;
-import com.shixi.expense.common.idempotency.IdempotencyDecision;
-import com.shixi.expense.common.idempotency.IdempotencyRecord;
 import com.shixi.expense.common.idempotency.IdempotencyRequest;
-import com.shixi.expense.common.idempotency.IdempotencyService;
+import com.shixi.expense.common.idempotency.IdempotentOperationExecutor;
 import com.shixi.expense.department.entity.Department;
 import com.shixi.expense.department.mapper.DepartmentMapper;
 import com.shixi.expense.notification.dto.NotificationCreateCommand;
@@ -77,13 +71,12 @@ public class ExpenseReportService {
     private final ApprovalTaskMapper approvalTaskMapper;
     private final DepartmentMapper departmentMapper;
     private final ExpenseReportCsvExporter csvExporter;
-    private final ObjectMapper objectMapper;
    
     @Autowired(required = false)
     private OperationLogWriteService operationLogWriteService;
 
     private final NotificationService notificationService;
-    private final IdempotencyService idempotencyService;
+    private final IdempotentOperationExecutor submissionExecutor;
     public ExpenseReportService(
         ExpenseReportMapper expenseReportMapper,
         ExpenseItemMapper expenseItemMapper,
@@ -92,9 +85,8 @@ public class ExpenseReportService {
         ApprovalTaskMapper approvalTaskMapper,
         DepartmentMapper departmentMapper,
         ExpenseReportCsvExporter csvExporter,
-        IdempotencyService idempotencyService,
-        NotificationService notificationService,
-        ObjectMapper objectMapper) {
+        IdempotentOperationExecutor submissionExecutor,
+        NotificationService notificationService) {
 
     this.expenseReportMapper = expenseReportMapper;
     this.expenseItemMapper = expenseItemMapper;
@@ -103,8 +95,7 @@ public class ExpenseReportService {
     this.approvalTaskMapper = approvalTaskMapper;
     this.departmentMapper = departmentMapper;
     this.csvExporter = csvExporter;
-    this.idempotencyService = idempotencyService;
-    this.objectMapper = objectMapper;
+    this.submissionExecutor = submissionExecutor;
     this.notificationService = notificationService;
 }
 
@@ -720,89 +711,22 @@ public class ExpenseReportService {
     }
 
     /** 提交本人报销单：DRAFT/REJECTED -> APPROVING。 */
-    @Transactional
-    public ExpenseReportVO submit(Long reportId,String idempotencyKey) {
-           // 从登录态获取用户名
-            String username = SecurityContextHolder
-                    .getContext()
-                    .getAuthentication()
-                    .getName();
-
-            // 根据用户名查询当前用户
-            SysUser user = sysUserMapper.selectOne(
-                    new LambdaQueryWrapper<SysUser>()
-                            .eq(SysUser::getUsername, username)
-                            .eq(SysUser::getStatus, 1)
-            );
-
-            if (user == null) {
-                throw new IllegalStateException(
-                        "当前登录用户不存在");
-            }
-
-            // 组装一次幂等请求
-            IdempotencyRequest request =
-                    new IdempotencyRequest(
-                            idempotencyKey,
-                            user.getId(),
-                            "SUBMIT_REPORT",
-                            reportId
-                    );
-
-            // 尝试获得处理权
-            IdempotencyAcquireResult acquireResult = idempotencyService.acquire(request);
-
-            String ownerToken = acquireResult.ownerToken();
-
-            if (acquireResult.decision() == IdempotencyDecision.PROCESSING) {
-                // 相同用户使用相同 key 的请求正在处理中。
-                // 此时不能再次调用 submitInternal()，否则可能重复创建审批任务。
-                throw new BusinessException(
-                        ErrorCode.CONFLICT,
-                        "相同请求正在处理中");
-            }
-
-            if (acquireResult.decision() == IdempotencyDecision.SUCCEEDED) {
-                // 说明相同 key 的请求以前已经成功处理过。
-                // 解析第一次成功请求保存的响应快照并直接返回。
-                String  responseSnapshot= acquireResult.responseSnapshot();
-                // 兼容以前没有保存响应快照的数据
-                if (responseSnapshot == null || responseSnapshot.isBlank()) {
-                    return getDetail(reportId);
-                }
-                // 把数据库中的 JSON 转回 ExpenseReportVO
-                try {
-                    return objectMapper.readValue(responseSnapshot, ExpenseReportVO.class);
-                } 
-                catch (JsonProcessingException exception) {
-                    throw new BusinessException(
-                            ErrorCode.INTERNAL_ERROR,
-                            "读取幂等响应快照失败");
-                }
-            }
-
-            if (acquireResult.decision()!= IdempotencyDecision.ACQUIRED) {
-                throw new BusinessException(
-                        ErrorCode.CONFLICT,
-                        "当前请求未获得处理权");
-            }
-
-            try {
+    public ExpenseReportVO submit(Long reportId, String idempotencyKey) {
+        String username = SecurityContextHolder.getContext().getAuthentication().getName();
+        SysUser user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getUsername, username).eq(SysUser::getStatus, 1));
+        if (user == null) throw new IllegalStateException("当前登录用户不存在");
+        IdempotencyRequest request = new IdempotencyRequest(idempotencyKey, user.getId(), "SUBMIT_REPORT", reportId);
+        try {
+            return submissionExecutor.execute(request, () -> {
                 ExpenseReportVO result = submitInternal(reportId);
-                String responseSnapshot = objectMapper.writeValueAsString(result);
-                idempotencyService.markSucceeded(request, responseSnapshot);
                 recordSubmitSuccess(reportId);
-
                 return result;
-            } catch (JsonProcessingException exception) {
-                markIdempotencyFailedSafely(request, ownerToken,"保存幂等响应快照失败");
-                throw new BusinessException(ErrorCode.INTERNAL_ERROR,"保存幂等响应快照失败");
-            }catch(RuntimeException exception){
-                markIdempotencyFailedSafely(request, ownerToken,"报销单提交失败");
-                recordSubmitFailure(reportId, exception.getMessage());
-                throw exception;
-            }
-
+            }, ExpenseReportVO.class);
+        } catch (RuntimeException exception) {
+            recordSubmitFailure(reportId, "报销单提交失败");
+            throw exception;
+        }
     }
 
     private ExpenseReportVO submitInternal(Long reportId) {
@@ -909,25 +833,6 @@ public class ExpenseReportService {
         } catch (RuntimeException ignored) { }
     }
 
-        /**
-         * 尝试记录幂等失败状态。
-         * 清理失败只能记录日志，不能覆盖原始业务异常。
-         */
-        private void markIdempotencyFailedSafely(IdempotencyRequest request,String ownerToken,String safeErrorSummary) 
-        {
-            try {
-                idempotencyService.markFailed(
-                        request,
-                        ownerToken,
-                        safeErrorSummary);
-            } catch (RuntimeException cleanupException) {
-                log.warn(
-                        "记录幂等失败状态异常，userId={}, businessId={}",
-                        request.userId(),
-                        request.businessId(),
-                        cleanupException);
-            }
-        }
     private void recordSubmitFailure(Long reportId, String message) {
         if (operationLogWriteService == null) return;
         try {

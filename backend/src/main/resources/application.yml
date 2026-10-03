@@ -23,6 +23,19 @@ spring:
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USERNAME:guest}
     password: ${RABBITMQ_PASSWORD:guest}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    listener:
+      simple:
+        default-requeue-rejected: false
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 1s
+          max-interval: 5s
+          multiplier: 2
   servlet:
     multipart:
       # Spring 在进入 Controller 前执行的请求级大小限制。
@@ -51,11 +64,13 @@ springdoc:
 security:
   jwt:
     # 使用 Base64 编码且不少于 32 字节的原始密钥，真实密钥只通过环境变量提供。
-    # 本地开发兜底密钥（Base64 解码后 32 字节）；生产环境必须通过 JWT_SECRET 覆盖。
-    secret: ${JWT_SECRET:qTU9CpYSb+dWADqFLNsrTcU0UBQePicUC4mdL09jYGA=}
+    secret: ${JWT_SECRET}
     expiration-seconds: ${JWT_EXPIRATION_SECONDS:7200}
 
 app:
+  jobs:
+    enabled: ${BACKGROUND_JOBS_ENABLED:true}
+    poll-interval-ms: ${BACKGROUND_JOBS_POLL_INTERVAL_MS:3000}
   notification:
     rabbitmq:
       # 默认关闭，未安装 RabbitMQ 时继续使用同步通知；学习异步消息时改为 true。

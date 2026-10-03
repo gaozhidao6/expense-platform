@@ -26,6 +26,8 @@ public class IdempotencyRecord {
     private String businessType;
     private Long businessId;
     private String status;
+    private String ownerToken;
+    private Long version;
     private String responseSnapshot;
     private LocalDateTime expiresAt;
     private LocalDateTime createdAt;

@@ -5,6 +5,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.shixi.expense.notification.config.NotificationRabbitProperties;
 import com.shixi.expense.notification.dto.NotificationCreateCommand;
@@ -71,10 +72,19 @@ class NotificationServiceRabbitTests {
         NotificationService service = serviceWithRabbit(false);
         when(notificationMapper.insert(any(Notification.class)))
                 .thenThrow(new DuplicateKeyException("duplicate message key"));
+        when(notificationMapper.selectCount(any())).thenReturn(1L);
 
         assertDoesNotThrow(() -> service.create(command()));
 
         verify(messagePublisher, never()).publish(any());
+    }
+
+    @Test
+    void unrelatedUniqueCollisionMustNotBeAcknowledgedAsDelivered() {
+        when(notificationMapper.insert(any(Notification.class)))
+                .thenThrow(new DuplicateKeyException("unrelated collision"));
+        when(notificationMapper.selectCount(any())).thenReturn(0L);
+        assertThrows(DuplicateKeyException.class, () -> serviceWithRabbit(true).createFromMessage(command()));
     }
 
     private NotificationService serviceWithRabbit(boolean enabled) {

@@ -123,8 +123,11 @@ public class NotificationService {
                 throw new IllegalStateException("创建通知失败");
             }
         } catch (DuplicateKeyException exception) {
-            // 相同接收人和 messageKey 已经创建过通知。
-            // 将其视为重复消息，直接结束，不创建第二条。
+            // Only the same recipient/message pair is a successfully delivered duplicate.
+            Long existing = notificationMapper.selectCount(new LambdaQueryWrapper<Notification>()
+                    .eq(Notification::getRecipientId, command.recipientId())
+                    .eq(Notification::getMessageKey, command.messageKey().trim()));
+            if (existing == null || existing == 0) throw exception;
         }
     }
 

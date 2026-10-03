@@ -32,7 +32,8 @@ import com.shixi.expense.user.mapper.SysUserMapper;
 import com.shixi.expense.department.mapper.DepartmentMapper;
 import com.shixi.expense.common.idempotency.IdempotencyAcquireResult;
 import com.shixi.expense.common.idempotency.IdempotencyDecision;
-import com.shixi.expense.common.idempotency.IdempotencyService;
+import com.shixi.expense.common.idempotency.IdempotentOperationExecutor;
+import java.util.function.Supplier;
 import com.shixi.expense.common.exception.BusinessException;
 import com.shixi.expense.notification.service.NotificationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -79,13 +80,11 @@ class ExpenseReportServiceTests {
     private ExpenseReportCsvExporter csvExporter;
 
     @Mock
-    private IdempotencyService idempotencyService;
+    private IdempotentOperationExecutor submissionExecutor;
 
     @Mock
     private NotificationService notificationService;
 
-    @Mock
-    private ObjectMapper objectMapper;
 
     private ExpenseReportService expenseReportService;
 
@@ -99,16 +98,10 @@ class ExpenseReportServiceTests {
                 approvalTaskMapper,
                 departmentMapper,
                 csvExporter,
-                idempotencyService,
-                notificationService,
-                objectMapper);
-        lenient().when(idempotencyService.acquire(any()))
-                .thenReturn(new IdempotencyAcquireResult(
-                        IdempotencyDecision.ACQUIRED,
-                        null,
-                        "test-owner-token"));
-        lenient().when(objectMapper.writeValueAsString(any(ExpenseReportVO.class)))
-                .thenReturn("{}");
+                submissionExecutor,
+                notificationService);
+        lenient().when(submissionExecutor.execute(any(), any(), eq(ExpenseReportVO.class)))
+                .thenAnswer(invocation -> ((Supplier<ExpenseReportVO>) invocation.getArgument(1)).get());
         Department department = new Department();
         department.setId(2L);
         department.setStatus(1);

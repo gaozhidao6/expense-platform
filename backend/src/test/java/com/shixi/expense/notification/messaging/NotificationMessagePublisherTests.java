@@ -1,92 +1,33 @@
 package com.shixi.expense.notification.messaging;
 
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
-
-import com.shixi.expense.notification.config.NotificationRabbitProperties;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.shixi.expense.common.jobs.DurableJobStore;
 import com.shixi.expense.notification.dto.NotificationCreateCommand;
 import com.shixi.expense.notification.enums.NotificationType;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-@ExtendWith(MockitoExtension.class)
 class NotificationMessagePublisherTests {
-
-    @Mock
-    private RabbitTemplate rabbitTemplate;
-
-    private NotificationMessagePublisher publisher;
-    private NotificationCreateCommand command;
-
-    @BeforeEach
-    void setUp() {
-        NotificationRabbitProperties properties = new NotificationRabbitProperties(
-                true,
-                "test.exchange",
-                "test.queue",
-                "test.create");
-        publisher = new NotificationMessagePublisher(rabbitTemplate, properties);
-        command = new NotificationCreateCommand(
-                10L,
-                NotificationType.APPROVAL_TODO,
-                "待审核报销单",
-                "请处理一张报销单",
-                "EXPENSE_REPORT",
-                100L,
-                "APPROVAL_TODO:100:1");
-    }
-
-    @AfterEach
-    void tearDown() {
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.clearSynchronization();
-        }
-        TransactionSynchronizationManager.setActualTransactionActive(false);
+    @Test
+    void persistsSerializableDeliveryIntentWithoutCallingRabbit() throws Exception {
+        DurableJobStore jobs = mock(DurableJobStore.class);
+        ObjectMapper json = new ObjectMapper();
+        var command = new NotificationCreateCommand(10L, NotificationType.APPROVAL_TODO,
+                "待办", "处理报销单", "EXPENSE_REPORT", 100L, "event:100");
+        new NotificationMessagePublisher(jobs, json).publish(command);
+        verify(jobs).enqueueNotification("event:100", 10L, json.writeValueAsString(command));
     }
 
     @Test
-    void sendsImmediatelyWhenThereIsNoTransaction() {
-        publisher.publish(command);
-
-        verify(rabbitTemplate).convertAndSend(
-                "test.exchange",
-                "test.create",
-                command);
-    }
-
-    @Test
-    void sendsOnlyAfterTransactionCommit() {
-        TransactionSynchronizationManager.initSynchronization();
-        TransactionSynchronizationManager.setActualTransactionActive(true);
-
-        publisher.publish(command);
-
-        verifyNoInteractions(rabbitTemplate);
-        TransactionSynchronizationManager.getSynchronizations()
-                .forEach(synchronization -> synchronization.afterCommit());
-        verify(rabbitTemplate).convertAndSend(
-                "test.exchange",
-                "test.create",
-                command);
-    }
-
-    @Test
-    void doesNotSendWhenTransactionDoesNotCommit() {
-        TransactionSynchronizationManager.initSynchronization();
-        TransactionSynchronizationManager.setActualTransactionActive(true);
-
-        publisher.publish(command);
-
-        TransactionSynchronizationManager.getSynchronizations()
-                .forEach(synchronization -> synchronization.afterCompletion(
-                        TransactionSynchronization.STATUS_ROLLED_BACK));
-        verifyNoInteractions(rabbitTemplate);
+    void propagatesStorageFailureSoBusinessCannotCommitWithoutIntent() {
+        DurableJobStore jobs = mock(DurableJobStore.class);
+        doThrow(new IllegalStateException("database unavailable")).when(jobs)
+                .enqueueNotification(anyString(), anyLong(), anyString());
+        var command = new NotificationCreateCommand(10L, NotificationType.APPROVAL_TODO,
+                "待办", "处理报销单", "EXPENSE_REPORT", 100L, "event:100");
+        assertThrows(IllegalStateException.class,
+                () -> new NotificationMessagePublisher(jobs, new ObjectMapper()).publish(command));
     }
 }

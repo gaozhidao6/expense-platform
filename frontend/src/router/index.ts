@@ -5,6 +5,7 @@ import UsersView from '@/views/UsersView.vue'
 import ApprovalsView from '@/views/ApprovalsView.vue'
 import ReportsView from '@/views/ReportsView.vue'
 import ReportEditorView from '@/views/ReportEditorView.vue'
+import ExpensePoliciesView from '@/views/ExpensePoliciesView.vue'
 import OperationLogsView from '@/views/OperationLogsView.vue'
 import NotificationsView from '@/views/NotificationsView.vue'
 import { pinia } from '@/stores'
@@ -14,6 +15,7 @@ import { useAuthStore } from '@/stores/auth'
 const router = createRouter({
   history: createWebHistory(),
   routes: [
+    { path: '/expense-policies', name: 'expense-policies', component: ExpensePoliciesView, meta: { requiresAuth: true, roles: ['ADMIN'] } },
     {
       path: '/login',
       name: 'login',

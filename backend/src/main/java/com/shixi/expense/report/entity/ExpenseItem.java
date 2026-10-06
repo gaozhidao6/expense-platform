@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -39,6 +41,13 @@ public class ExpenseItem {
 
     /** 本条明细金额，使用 BigDecimal 避免精度问题。 */
     private BigDecimal amount;
+
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String overLimitReason;
+
+    /** Submitted limit snapshot, cleared when editing a draft or rejected report. */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal appliedLimitAmount;
 
     /** 税额。 */
     private BigDecimal taxAmount;

@@ -55,6 +55,7 @@ watch(() => route.fullPath, () => void refreshUnreadCount())
       <span v-if="unreadCount > 0" class="notification-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
     </RouterLink>
     <RouterLink v-if="isAdmin" to="/users">用户管理</RouterLink>
+    <RouterLink v-if="isAdmin" to="/expense-policies">费用规则</RouterLink>
     <RouterLink v-if="canAudit" to="/operation-logs">操作日志</RouterLink>
     </div>
     <span class="nav-user">{{ user?.username }} · {{ roles.join(', ') }}</span>

@@ -6,6 +6,9 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.Map;
+import com.shixi.expense.policy.ExpensePolicyService;
+import com.shixi.expense.policy.ExpenseType;
 
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.access.AccessDeniedException;
@@ -77,6 +80,7 @@ public class ExpenseReportService {
 
     private final NotificationService notificationService;
     private final IdempotentOperationExecutor submissionExecutor;
+    private final ExpensePolicyService expensePolicyService;
     public ExpenseReportService(
         ExpenseReportMapper expenseReportMapper,
         ExpenseItemMapper expenseItemMapper,
@@ -86,7 +90,8 @@ public class ExpenseReportService {
         DepartmentMapper departmentMapper,
         ExpenseReportCsvExporter csvExporter,
         IdempotentOperationExecutor submissionExecutor,
-        NotificationService notificationService) {
+        NotificationService notificationService,
+        ExpensePolicyService expensePolicyService) {
 
     this.expenseReportMapper = expenseReportMapper;
     this.expenseItemMapper = expenseItemMapper;
@@ -97,6 +102,7 @@ public class ExpenseReportService {
     this.csvExporter = csvExporter;
     this.submissionExecutor = submissionExecutor;
     this.notificationService = notificationService;
+    this.expensePolicyService = expensePolicyService;
 }
 
     // 创建主表、明细并计算总额，必须在同一个事务中完成。
@@ -133,7 +139,8 @@ public class ExpenseReportService {
                 ExpenseItem item = new ExpenseItem();
                 item.setReportId(newReport.getId());
                 item.setExpenseDate(itemDTO.getExpenseDate());
-                item.setExpenseType(itemDTO.getExpenseType());
+                item.setExpenseType(ExpenseType.require(itemDTO.getExpenseType()).name());
+                item.setOverLimitReason(trimReason(itemDTO.getOverLimitReason()));
                 item.setMerchant(itemDTO.getMerchant());
                 item.setDescription(itemDTO.getDescription());
                 item.setAmount(itemDTO.getAmount());
@@ -415,6 +422,8 @@ public class ExpenseReportService {
 
     /** 将报销单及其有效明细转换成接口返回对象。 */
     private ExpenseReportVO toVO(ExpenseReport report) {
+        boolean draft = "DRAFT".equals(report.getStatus()) || "REJECTED".equals(report.getStatus());
+        Map<String, BigDecimal> limits = draft ? expensePolicyService.activeLimits() : Map.of();
         List<ExpenseItem> savedItems = expenseItemMapper.selectList(
                 new LambdaQueryWrapper<ExpenseItem>()
                         .eq(ExpenseItem::getReportId, report.getId())
@@ -431,6 +440,10 @@ public class ExpenseReportService {
                     itemVO.setMerchant(item.getMerchant());
                     itemVO.setDescription(item.getDescription());
                     itemVO.setAmount(item.getAmount());
+                    BigDecimal limit = draft ? limits.get(item.getExpenseType()) : item.getAppliedLimitAmount();
+                    itemVO.setLimitAmount(limit);
+                    itemVO.setOverLimit(ExpensePolicyService.isOverLimit(item.getAmount(), limit));
+                    itemVO.setOverLimitReason(item.getOverLimitReason());
                     itemVO.setTaxAmount(item.getTaxAmount());
                     itemVO.setSortOrder(item.getSortOrder());
                     itemVO.setCreatedAt(item.getCreatedAt());
@@ -491,7 +504,7 @@ public class ExpenseReportService {
             throw new IllegalStateException("当前登录用户不存在");
         }
         // 查询报销单
-        ExpenseReport report = expenseReportMapper.selectById(reportId);
+        ExpenseReport report = expenseReportMapper.selectByIdForUpdate(reportId);
         // 判断报销单存在
         if (report == null) {
             throw new IllegalStateException("报销单不存在");
@@ -522,7 +535,7 @@ public class ExpenseReportService {
             throw new IllegalStateException("当前登录用户不存在");
         }
         // 查询报销单
-        ExpenseReport report = expenseReportMapper.selectById(reportId);
+        ExpenseReport report = expenseReportMapper.selectByIdForUpdate(reportId);
         // 判断报销单存在
         if (report == null) {
             throw new IllegalStateException("报销单不存在");
@@ -643,7 +656,9 @@ public class ExpenseReportService {
         ExpenseItem item = new ExpenseItem();
                 item.setReportId(report.getId());
                 item.setExpenseDate(request.getExpenseDate());
-                item.setExpenseType(request.getExpenseType());
+                item.setExpenseType(ExpenseType.require(request.getExpenseType()).name());
+                item.setOverLimitReason(trimReason(request.getOverLimitReason()));
+                item.setAppliedLimitAmount(null);
                 item.setMerchant(request.getMerchant());
                 item.setDescription(request.getDescription());
                 item.setAmount(request.getAmount());
@@ -674,7 +689,9 @@ public class ExpenseReportService {
                     throw new IllegalStateException("费用明细不存在");
                 }
                 item.setExpenseDate(request.getExpenseDate());
-                item.setExpenseType(request.getExpenseType());
+                item.setExpenseType(ExpenseType.require(request.getExpenseType()).name());
+                item.setOverLimitReason(trimReason(request.getOverLimitReason()));
+                item.setAppliedLimitAmount(null);
                 item.setMerchant(request.getMerchant());
                 item.setDescription(request.getDescription());
                 item.setAmount(request.getAmount());
@@ -747,6 +764,16 @@ public class ExpenseReportService {
         // 没有任何有效明细时，不允许进入审批流程。
         if (items.isEmpty()) {
             throw new IllegalStateException("至少需要一条费用明细才能提交");
+        }
+
+        Map<String, BigDecimal> limits = expensePolicyService.activeLimits();
+        expensePolicyService.validateSubmission(items, report.getCurrency(), limits);
+        // Snapshot the rules of this approval round; later administrator edits cannot change it.
+        for (ExpenseItem item : items) {
+            item.setAppliedLimitAmount(limits.get(item.getExpenseType()));
+            if (expenseItemMapper.updateById(item) != 1) {
+                throw new BusinessException(ErrorCode.CONFLICT, "费用明细已变更，请刷新后重试");
+            }
         }
 
         // 查询当前登录用户，用于记录审批操作人。
@@ -824,6 +851,10 @@ public class ExpenseReportService {
         notificationService.create(command);
         // 返回包含最新状态和有效明细的详情。
         return toVO(report);
+    }
+
+    private static String trimReason(String reason) {
+        return reason == null || reason.isBlank() ? null : reason.trim();
     }
 
     private void recordSubmitSuccess(Long reportId) {

@@ -269,7 +269,7 @@ public class InvoiceSuggestionService {
                     "当前报销单中不存在该识别建议");
         }
         // 6. 查询报销单，并检查当前用户必须是申请人。
-        ExpenseReport report = reportMapper.selectById(reportId);
+        ExpenseReport report = reportMapper.selectByIdForUpdate(reportId);
         if (report == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "报销单不存在");
         }

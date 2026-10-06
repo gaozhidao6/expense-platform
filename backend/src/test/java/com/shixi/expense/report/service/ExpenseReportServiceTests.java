@@ -85,6 +85,9 @@ class ExpenseReportServiceTests {
     @Mock
     private NotificationService notificationService;
 
+    @Mock
+    private com.shixi.expense.policy.ExpensePolicyService expensePolicyService;
+
 
     private ExpenseReportService expenseReportService;
 
@@ -99,7 +102,12 @@ class ExpenseReportServiceTests {
                 departmentMapper,
                 csvExporter,
                 submissionExecutor,
-                notificationService);
+                notificationService,
+                expensePolicyService);
+        lenient().when(expensePolicyService.activeLimits()).thenReturn(java.util.Map.of());
+        lenient().when(expenseItemMapper.updateById(any(ExpenseItem.class))).thenReturn(1);
+        lenient().when(expenseReportMapper.selectByIdForUpdate(anyLong()))
+                .thenAnswer(invocation -> expenseReportMapper.selectById(invocation.<Long>getArgument(0)));
         lenient().when(submissionExecutor.execute(any(), any(), eq(ExpenseReportVO.class)))
                 .thenAnswer(invocation -> ((Supplier<ExpenseReportVO>) invocation.getArgument(1)).get());
         Department department = new Department();

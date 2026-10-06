@@ -29,6 +29,9 @@ public class ExpenseItemDTO {
     @Size(max = 500, message = "description must not exceed 500 characters")
     private String description;
 
+    @Size(max = 500, message = "overLimitReason must not exceed 500 characters")
+    private String overLimitReason;
+
     /** 金额必须大于 0，整数最多 13 位，小数最多 2 位。 */
     @NotNull(message = "amount must not be null")
     @DecimalMin(value = "0.01", message = "amount must be greater than 0")

@@ -4,6 +4,7 @@ import { ElMessageBox } from 'element-plus'
 import { http } from '@/api/http'
 import { errorMessage } from '@/api/errors'
 import { useAuthStore } from '@/stores/auth'
+import ExpenseItemsTable, { type ReviewExpenseItem } from '@/components/ExpenseItemsTable.vue'
 
 type ApprovalTask = {
   id: number
@@ -31,6 +32,8 @@ type ApprovalRecord = {
 
 const tasks = ref<ApprovalTask[]>([])
 const records = ref<ApprovalRecord[]>([])
+const expenseItems = ref<ReviewExpenseItem[]>([])
+const detailsReady = ref(false)
 const selected = ref<ApprovalTask | null>(null)
 const comment = ref('')
 const loading = ref(false)
@@ -41,7 +44,7 @@ const operating = ref(false)
 const auth = useAuthStore()
 
 const canOperateSelected = computed(() => {
-  if (!selected.value) return false
+  if (!selected.value || !detailsReady.value) return false
   const roles = auth.roles
   if (roles.includes('ADMIN')) return true
   if (selected.value.nodeCode === 'MANAGER_APPROVAL') return roles.includes('MANAGER')
@@ -68,16 +71,25 @@ async function selectTask(task: ApprovalTask) {
   selected.value = task
   message.value = ''
   records.value = []
+  expenseItems.value = []
+  detailsReady.value = false
   detailLoading.value = true
   try {
-    const { data } = await http.get<ApprovalRecord[]>(`/approvals/${task.reportId}/records`)
-    records.value = data || []
+    const [history, detail] = await Promise.all([
+      http.get<ApprovalRecord[]>(`/approvals/${task.reportId}/records`),
+      http.get(`/reports/${task.reportId}`),
+    ])
+    if (selected.value?.id !== task.id) return
+    records.value = history.data || []
+    expenseItems.value = detail.data.items || []
+    detailsReady.value = true
   } catch (error: any) {
+    if (selected.value?.id !== task.id) return
     messageType.value = 'error'
     message.value = errorMessage(error, '审批历史加载失败')
     records.value = []
   } finally {
-    detailLoading.value = false
+    if (selected.value?.id === task.id) detailLoading.value = false
   }
 }
 
@@ -162,6 +174,8 @@ onMounted(loadTasks)
         <template v-else>
           <div class="panel-heading"><h2>{{ selected.reportTitle || selected.reportNo }}</h2><el-tag type="warning">{{ selected.nodeName }}</el-tag></div>
           <p class="muted">报销单：{{ selected.reportNo }} · 金额：{{ selected.totalAmount ?? '-' }} · 第 {{ selected.approvalRound }} 轮</p>
+          <h3>费用明细与超限原因</h3>
+          <ExpenseItemsTable :items="expenseItems" />
           <h3>审批历史</h3>
           <el-timeline>
             <el-timeline-item v-for="record in records" :key="record.id" :timestamp="record.operatedAt">

@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { http } from '@/api/http'
 import ReportAttachments from '@/components/ReportAttachments.vue'
+import { expenseTypes, getExpensePolicies, type ExpensePolicy } from '@/api/policies'
 
 interface ExpenseItemForm {
   id?: number
@@ -13,6 +14,9 @@ interface ExpenseItemForm {
   amount: number
   taxAmount: number
   sortOrder: number
+  overLimitReason?: string
+  limitAmount?: number | null
+  overLimit?: boolean
 }
 
 const route = useRoute()
@@ -28,14 +32,17 @@ const message = ref('')
 const messageType = ref<'success' | 'warning' | 'error' | 'info'>('info')
 const submitIdempotencyKey = ref<string | null>(null)
 const reportStatus = ref('DRAFT')
+const policies = ref<ExpensePolicy[]>([])
 
-const expenseTypes = [
-  { value: 'TRAVEL', label: '差旅住宿' },
-  { value: 'MEAL', label: '餐饮招待' },
-  { value: 'TRANSPORT', label: '交通出行' },
-  { value: 'OFFICE', label: '办公用品' },
-  { value: 'OTHER', label: '其他费用' },
-]
+function itemLimit(item: ExpenseItemForm) {
+  if (!editable.value) return item.limitAmount ?? null
+  const policy = policies.value.find(p => p.expenseType === item.expenseType && p.enabled)
+  return policy ? Number(policy.limitAmount) : null
+}
+function isOverLimit(item: ExpenseItemForm) {
+  const limit = itemLimit(item)
+  return limit !== null && Number(item.amount) > limit
+}
 
 const editable = computed(() =>
   isNewReport.value || ['DRAFT', 'REJECTED'].includes(reportStatus.value),
@@ -93,6 +100,8 @@ function validate() {
 }
 
 async function load() {
+  try { policies.value = await getExpensePolicies() }
+  catch (error: any) { showMessage(error.userMessage || '费用规则加载失败，提交时仍由服务器校验', 'warning') }
   if (!reportId.value) { items.value = [blankItem()]; return }
   loading.value = true
   try {
@@ -150,6 +159,8 @@ async function submit() {
   if (!reportId.value || submitting.value) return
   const validation = validate()
   if (validation) { showMessage(validation, 'warning'); return }
+  const missingReason = items.value.findIndex(item => isOverLimit(item) && !item.overLimitReason?.trim())
+  if (missingReason >= 0) { showMessage(`第 ${missingReason + 1} 条费用明细超过单笔限额，请填写超限原因后再提交`, 'warning'); return }
   if (!window.confirm(`确认提交审批吗？提交金额为 ${total.value} ${form.currency}。`)) return
   submitting.value = true
   submitIdempotencyKey.value ||= crypto.randomUUID()
@@ -161,6 +172,9 @@ async function submit() {
     await load()
     showMessage('报销单已提交审批', 'success')
   } catch (error: any) {
+    if (error.response?.status === 400) {
+      try { policies.value = await getExpensePolicies() } catch { /* Keep the original submission error. */ }
+    }
     showMessage(error.userMessage || error.response?.data?.message || '提交失败', 'error')
   } finally { submitting.value = false }
 }
@@ -225,6 +239,11 @@ onMounted(load)
             <label><span>商户名称</span><el-input v-model="item.merchant" placeholder="例如：上海虹桥酒店" :disabled="!editable" /></label>
             <label><span>金额（{{ form.currency }}）*</span><el-input-number v-model="item.amount" :min="0" :precision="2" :step="10" controls-position="right" :disabled="!editable" /></label>
             <label class="description-field"><span>费用说明 *</span><el-input v-model="item.description" maxlength="500" placeholder="说明这笔费用的用途" :disabled="!editable" /></label>
+            <div class="description-field limit-check">
+              <el-alert v-if="isOverLimit(item)" :title="`本条金额超过单笔限额 ${itemLimit(item)} 元，请填写原因供审批人核查`" type="warning" :closable="false" show-icon />
+              <span v-else class="muted">{{ itemLimit(item) === null ? '本类型未启用单笔限额' : `单笔限额：${itemLimit(item)} 元` }}</span>
+            </div>
+            <label v-if="isOverLimit(item) || item.overLimitReason" class="description-field"><span>超限原因{{ isOverLimit(item) ? ' *' : '' }}</span><el-input v-model="item.overLimitReason" type="textarea" :rows="2" maxlength="500" show-word-limit placeholder="说明超出限额的业务原因，供审批人核查" :disabled="!editable" /></label>
           </div>
         </article>
       </div>

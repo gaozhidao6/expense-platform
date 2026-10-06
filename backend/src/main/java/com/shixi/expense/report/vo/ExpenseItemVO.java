@@ -15,6 +15,9 @@ public class ExpenseItemVO {
     private String merchant;
     private String description;
     private BigDecimal amount;
+    private String overLimitReason;
+    private BigDecimal limitAmount;
+    private boolean overLimit;
     private BigDecimal taxAmount;
     private Integer sortOrder;
     private LocalDateTime createdAt;

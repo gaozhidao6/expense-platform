@@ -48,6 +48,9 @@ class InvoiceSuggestionServiceTests {
 
     @BeforeEach
     void setUp() {
+        org.mockito.Mockito.lenient().when(reportMapper.selectByIdForUpdate(org.mockito.ArgumentMatchers.anyLong()))
+                .thenAnswer(invocation -> reportMapper.selectById(invocation.<Long>getArgument(0)));
+
         service = new InvoiceSuggestionService(
                 suggestionMapper,
                 reportMapper,
